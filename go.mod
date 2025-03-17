@@ -1,4 +1,4 @@
-module github.com/ikimpriv/mediamtx
+module github.com/bluenviron/mediamtx
 
 go 1.23.0
 
