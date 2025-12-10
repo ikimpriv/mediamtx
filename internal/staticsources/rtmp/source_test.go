@@ -1,6 +1,7 @@
 package rtmp
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"os"
@@ -9,99 +10,131 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/bluenviron/gortmplib"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
-	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
 	"github.com/bluenviron/mediamtx/internal/test"
 )
 
 func TestSource(t *testing.T) {
-	for _, ca := range []string{
+	for _, encryption := range []string{
 		"plain",
 		"tls",
 	} {
-		t.Run(ca, func(t *testing.T) {
-			ln, err := func() (net.Listener, error) {
-				if ca == "plain" {
-					return net.Listen("tcp", "127.0.0.1:1935")
+		for _, auth := range []string{
+			"no auth",
+			"auth",
+		} {
+			t.Run(encryption+"_"+auth, func(t *testing.T) {
+				var ln net.Listener
+
+				if encryption == "plain" {
+					var err error
+					ln, err = net.Listen("tcp", "127.0.0.1:1935")
+					require.NoError(t, err)
+				} else {
+					serverCertFpath, err := test.CreateTempFile(test.TLSCertPub)
+					require.NoError(t, err)
+					defer os.Remove(serverCertFpath)
+
+					serverKeyFpath, err := test.CreateTempFile(test.TLSCertKey)
+					require.NoError(t, err)
+					defer os.Remove(serverKeyFpath)
+
+					var cert tls.Certificate
+					cert, err = tls.LoadX509KeyPair(serverCertFpath, serverKeyFpath)
+					require.NoError(t, err)
+
+					ln, err = tls.Listen("tcp", "127.0.0.1:1936", &tls.Config{Certificates: []tls.Certificate{cert}})
+					require.NoError(t, err)
 				}
 
-				serverCertFpath, err := test.CreateTempFile(test.TLSCertPub)
-				require.NoError(t, err)
-				defer os.Remove(serverCertFpath)
+				defer ln.Close()
 
-				serverKeyFpath, err := test.CreateTempFile(test.TLSCertKey)
-				require.NoError(t, err)
-				defer os.Remove(serverKeyFpath)
+				var source string
 
-				var cert tls.Certificate
-				cert, err = tls.LoadX509KeyPair(serverCertFpath, serverKeyFpath)
-				require.NoError(t, err)
-
-				return tls.Listen("tcp", "127.0.0.1:1936", &tls.Config{Certificates: []tls.Certificate{cert}})
-			}()
-			require.NoError(t, err)
-			defer ln.Close()
-
-			go func() {
-				nconn, err := ln.Accept()
-				require.NoError(t, err)
-				defer nconn.Close()
-
-				conn := &rtmp.Conn{
-					RW: nconn,
+				if encryption == "plain" {
+					source = "rtmp://"
+				} else {
+					source = "rtmps://"
 				}
-				err = conn.Initialize()
-				require.NoError(t, err)
 
-				w := &rtmp.Writer{
-					Conn:       conn,
-					VideoTrack: test.FormatH264,
-					AudioTrack: test.FormatMPEG4Audio,
+				if auth == "auth" {
+					source += "myuser:mypass@"
 				}
-				err = w.Initialize()
-				require.NoError(t, err)
 
-				err = w.WriteH264(2*time.Second, 2*time.Second, [][]byte{{5, 2, 3, 4}})
-				require.NoError(t, err)
+				source += "localhost/teststream"
 
-				err = w.WriteH264(3*time.Second, 3*time.Second, [][]byte{{5, 2, 3, 4}})
-				require.NoError(t, err)
-			}()
+				p := &test.StaticSourceParent{}
+				p.Initialize()
+				defer p.Close()
 
-			var te *test.SourceTester
+				so := &Source{
+					ReadTimeout:  conf.Duration(10 * time.Second),
+					WriteTimeout: conf.Duration(10 * time.Second),
+					Parent:       p,
+				}
 
-			if ca == "plain" {
-				te = test.NewSourceTester(
-					func(p defs.StaticSourceParent) defs.StaticSource {
-						return &Source{
-							ReadTimeout:  conf.Duration(10 * time.Second),
-							WriteTimeout: conf.Duration(10 * time.Second),
-							Parent:       p,
+				done := make(chan struct{})
+				defer func() { <-done }()
+
+				ctx, ctxCancel := context.WithCancel(context.Background())
+				defer ctxCancel()
+
+				reloadConf := make(chan *conf.Path)
+
+				go func() {
+					so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+						Context:        ctx,
+						ResolvedSource: source,
+						Conf: &conf.Path{
+							SourceFingerprint: "33949E05FFFB5FF3E8AA16F8213A6251B4D9363804BA53233C4DA9A46D6F2739",
+						},
+						ReloadConf: reloadConf,
+					})
+					close(done)
+				}()
+
+				for {
+					nconn, err := ln.Accept()
+					require.NoError(t, err)
+					defer nconn.Close()
+
+					conn := &gortmplib.ServerConn{
+						RW: nconn,
+					}
+					err = conn.Initialize()
+					require.NoError(t, err)
+
+					if auth == "auth" {
+						err = conn.CheckCredentials("myuser", "mypass")
+						if err != nil {
+							continue
 						}
-					},
-					"rtmp://localhost/teststream",
-					&conf.Path{},
-				)
-			} else {
-				te = test.NewSourceTester(
-					func(p defs.StaticSourceParent) defs.StaticSource {
-						return &Source{
-							ReadTimeout:  conf.Duration(10 * time.Second),
-							WriteTimeout: conf.Duration(10 * time.Second),
-							Parent:       p,
-						}
-					},
-					"rtmps://localhost/teststream",
-					&conf.Path{
-						SourceFingerprint: "33949E05FFFB5FF3E8AA16F8213A6251B4D9363804BA53233C4DA9A46D6F2739",
-					},
-				)
-			}
+					}
 
-			defer te.Close()
+					err = conn.Accept()
+					require.NoError(t, err)
 
-			<-te.Unit
-		})
+					w := &gortmplib.Writer{
+						Conn:   conn,
+						Tracks: []format.Format{test.FormatH264, test.FormatMPEG4Audio},
+					}
+					err = w.Initialize()
+					require.NoError(t, err)
+
+					err = w.WriteMPEG4Audio(test.FormatMPEG4Audio, 2*time.Second, []byte{5, 2, 3, 4})
+					require.NoError(t, err)
+
+					break
+				}
+
+				<-p.Unit
+
+				// the source must be listening on ReloadConf
+				reloadConf <- nil
+			})
+		}
 	}
 }

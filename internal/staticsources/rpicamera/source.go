@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
-	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
-	"github.com/bluenviron/gortsplib/v4/pkg/format/rtpmjpeg"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmjpeg"
 	"github.com/pion/rtp"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -37,46 +37,48 @@ func paramsFromConf(logLevel conf.LogLevel, cnf *conf.Path) params {
 			}
 			return "error"
 		}(),
-		CameraID:          uint32(cnf.RPICameraCamID),
-		Width:             uint32(cnf.RPICameraWidth),
-		Height:            uint32(cnf.RPICameraHeight),
-		HFlip:             cnf.RPICameraHFlip,
-		VFlip:             cnf.RPICameraVFlip,
-		Brightness:        float32(cnf.RPICameraBrightness),
-		Contrast:          float32(cnf.RPICameraContrast),
-		Saturation:        float32(cnf.RPICameraSaturation),
-		Sharpness:         float32(cnf.RPICameraSharpness),
-		Exposure:          cnf.RPICameraExposure,
-		AWB:               cnf.RPICameraAWB,
-		AWBGainRed:        float32(cnf.RPICameraAWBGains[0]),
-		AWBGainBlue:       float32(cnf.RPICameraAWBGains[1]),
-		Denoise:           cnf.RPICameraDenoise,
-		Shutter:           uint32(cnf.RPICameraShutter),
-		Metering:          cnf.RPICameraMetering,
-		Gain:              float32(cnf.RPICameraGain),
-		EV:                float32(cnf.RPICameraEV),
-		ROI:               cnf.RPICameraROI,
-		HDR:               cnf.RPICameraHDR,
-		TuningFile:        cnf.RPICameraTuningFile,
-		Mode:              cnf.RPICameraMode,
-		FPS:               float32(cnf.RPICameraFPS),
-		AfMode:            cnf.RPICameraAfMode,
-		AfRange:           cnf.RPICameraAfRange,
-		AfSpeed:           cnf.RPICameraAfSpeed,
-		LensPosition:      float32(cnf.RPICameraLensPosition),
-		AfWindow:          cnf.RPICameraAfWindow,
-		FlickerPeriod:     uint32(cnf.RPICameraFlickerPeriod),
-		TextOverlayEnable: cnf.RPICameraTextOverlayEnable,
-		TextOverlay:       cnf.RPICameraTextOverlay,
-		Codec:             cnf.RPICameraCodec,
-		IDRPeriod:         uint32(cnf.RPICameraIDRPeriod),
-		Bitrate:           uint32(cnf.RPICameraBitrate),
-		Profile:           cnf.RPICameraProfile,
-		Level:             cnf.RPICameraLevel,
-		SecondaryWidth:    uint32(cnf.RPICameraSecondaryWidth),
-		SecondaryHeight:   uint32(cnf.RPICameraSecondaryHeight),
-		SecondaryFPS:      float32(cnf.RPICameraSecondaryFPS),
-		SecondaryQuality:  uint32(cnf.RPICameraSecondaryJPEGQuality),
+		CameraID:              uint32(cnf.RPICameraCamID),
+		Width:                 uint32(cnf.RPICameraWidth),
+		Height:                uint32(cnf.RPICameraHeight),
+		HFlip:                 cnf.RPICameraHFlip,
+		VFlip:                 cnf.RPICameraVFlip,
+		Brightness:            float32(cnf.RPICameraBrightness),
+		Contrast:              float32(cnf.RPICameraContrast),
+		Saturation:            float32(cnf.RPICameraSaturation),
+		Sharpness:             float32(cnf.RPICameraSharpness),
+		Exposure:              cnf.RPICameraExposure,
+		AWB:                   cnf.RPICameraAWB,
+		AWBGainRed:            float32(cnf.RPICameraAWBGains[0]),
+		AWBGainBlue:           float32(cnf.RPICameraAWBGains[1]),
+		Denoise:               cnf.RPICameraDenoise,
+		Shutter:               uint32(cnf.RPICameraShutter),
+		Metering:              cnf.RPICameraMetering,
+		Gain:                  float32(cnf.RPICameraGain),
+		EV:                    float32(cnf.RPICameraEV),
+		ROI:                   cnf.RPICameraROI,
+		HDR:                   cnf.RPICameraHDR,
+		TuningFile:            cnf.RPICameraTuningFile,
+		Mode:                  cnf.RPICameraMode,
+		FPS:                   float32(cnf.RPICameraFPS),
+		AfMode:                cnf.RPICameraAfMode,
+		AfRange:               cnf.RPICameraAfRange,
+		AfSpeed:               cnf.RPICameraAfSpeed,
+		LensPosition:          float32(cnf.RPICameraLensPosition),
+		AfWindow:              cnf.RPICameraAfWindow,
+		FlickerPeriod:         uint32(cnf.RPICameraFlickerPeriod),
+		TextOverlayEnable:     cnf.RPICameraTextOverlayEnable,
+		TextOverlay:           cnf.RPICameraTextOverlay,
+		Codec:                 cnf.RPICameraCodec,
+		IDRPeriod:             uint32(cnf.RPICameraIDRPeriod),
+		Bitrate:               uint32(cnf.RPICameraBitrate),
+		HardwareH264Profile:   cnf.RPICameraHardwareH264Profile,
+		HardwareH264Level:     cnf.RPICameraHardwareH264Level,
+		SoftwareH264Profile:   cnf.RPICameraSoftwareH264Profile,
+		SoftwareH264Level:     cnf.RPICameraSoftwareH264Level,
+		SecondaryWidth:        uint32(cnf.RPICameraSecondaryWidth),
+		SecondaryHeight:       uint32(cnf.RPICameraSecondaryHeight),
+		SecondaryFPS:          float32(cnf.RPICameraSecondaryFPS),
+		SecondaryMJPEGQuality: uint32(cnf.RPICameraSecondaryMJPEGQuality),
 	}
 }
 
@@ -99,18 +101,21 @@ func (*secondaryReader) APIReaderDescribe() defs.APIPathSourceOrReader {
 }
 
 type parent interface {
-	defs.StaticSourceParent
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
 	AddReader(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error)
 }
 
 // Source is a Raspberry Pi Camera static source.
 type Source struct {
-	LogLevel conf.LogLevel
-	Parent   parent
+	RTPMaxPayloadSize int
+	LogLevel          conf.LogLevel
+	Parent            parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[RPI Camera source] "+format, args...)
 }
 
@@ -148,10 +153,10 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 		medias = append(medias, mediaSecondary)
 	}
 
-	var stream *stream.Stream
+	var strm *stream.Stream
 
 	initializeStream := func() {
-		if stream == nil {
+		if strm == nil {
 			res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
 				Desc:               &description.Session{Medias: medias},
 				GenerateRTPPackets: false,
@@ -160,13 +165,13 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 				panic("should not happen")
 			}
 
-			stream = res.Stream
+			strm = res.Stream
 		}
 	}
 
 	encH264 := &rtph264.Encoder{
 		PayloadType:    96,
-		PayloadMaxSize: 1460,
+		PayloadMaxSize: s.RTPMaxPayloadSize,
 	}
 	err := encH264.Init()
 	if err != nil {
@@ -184,7 +189,7 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 
 		for _, pkt := range pkts {
 			pkt.Timestamp = uint32(pts)
-			stream.WriteRTPPacket(medi, medi.Formats[0], pkt, ntp, pts)
+			strm.WriteRTPPacket(medi, medi.Formats[0], pkt, ntp, pts)
 		}
 	}
 
@@ -192,7 +197,7 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 
 	if params.Conf.RPICameraSecondaryWidth != 0 {
 		encJpeg := &rtpmjpeg.Encoder{
-			PayloadMaxSize: 1460,
+			PayloadMaxSize: s.RTPMaxPayloadSize,
 		}
 		err = encJpeg.Init()
 		if err != nil {
@@ -211,13 +216,13 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 			for _, pkt := range pkts {
 				pkt.Timestamp = uint32(pts)
 				pkt.PayloadType = 96
-				stream.WriteRTPPacket(mediaSecondary, mediaSecondary.Formats[0], pkt, ntp, pts)
+				strm.WriteRTPPacket(mediaSecondary, mediaSecondary.Formats[0], pkt, ntp, pts)
 			}
 		}
 	}
 
 	defer func() {
-		if stream != nil {
+		if strm != nil {
 			s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
 		}
 	}()
@@ -227,8 +232,8 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 		onData:          onData,
 		onDataSecondary: onDataSecondary,
 	}
-	err = cam.initialize()
-	if err != nil {
+	err = cam.initialize() //nolint:staticcheck
+	if err != nil {        //nolint:staticcheck
 		return err
 	}
 	defer cam.close()
@@ -240,7 +245,7 @@ func (s *Source) runPrimary(params defs.StaticSourceRunParams) error {
 
 	for {
 		select {
-		case err := <-cameraErr:
+		case err = <-cameraErr:
 			return err
 
 		case cnf := <-params.ReloadConf:
@@ -277,12 +282,13 @@ func (s *Source) runSecondary(params defs.StaticSourceRunParams) error {
 		return res.Err
 	}
 
-	origStream.AddReader(
-		s,
+	rdr := &stream.Reader{Parent: s}
+
+	rdr.OnData(
 		origStream.Desc.Medias[1],
 		origStream.Desc.Medias[1].Formats[0],
-		func(u unit.Unit) error {
-			pkt := u.GetRTPPackets()[0]
+		func(u *unit.Unit) error {
+			pkt := u.RTPPackets[0]
 
 			newPkt := &rtp.Packet{
 				Header:  pkt.Header,
@@ -290,15 +296,15 @@ func (s *Source) runSecondary(params defs.StaticSourceRunParams) error {
 			}
 			newPkt.PayloadType = 26
 
-			res.Stream.WriteRTPPacket(media, media.Formats[0], newPkt, u.GetNTP(), u.GetPTS())
+			res.Stream.WriteRTPPacket(media, media.Formats[0], newPkt, u.NTP, u.PTS)
 			return nil
 		})
 
-	origStream.StartReader(s)
-	defer origStream.RemoveReader(s)
+	origStream.AddReader(rdr)
+	defer origStream.RemoveReader(rdr)
 
 	select {
-	case err := <-origStream.ReaderError(s):
+	case err = <-rdr.Error():
 		return err
 
 	case <-r.ctx.Done():

@@ -1,15 +1,16 @@
 package rtsp
 
 import (
+	"context"
 	"crypto/tls"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/auth"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/auth"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 
@@ -44,7 +45,7 @@ func TestSource(t *testing.T) {
 		"tls",
 	} {
 		t.Run(source, func(t *testing.T) {
-			var stream *gortsplib.ServerStream
+			var strm *gortsplib.ServerStream
 
 			nonce, err := auth.GenerateNonce()
 			require.NoError(t, err)
@@ -67,17 +68,17 @@ func TestSource(t *testing.T) {
 
 						return &base.Response{
 							StatusCode: base.StatusOK,
-						}, stream, nil
+						}, strm, nil
 					},
 					onSetup: func(_ *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
 						return &base.Response{
 							StatusCode: base.StatusOK,
-						}, stream, nil
+						}, strm, nil
 					},
 					onPlay: func(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 						go func() {
 							time.Sleep(100 * time.Millisecond)
-							err2 := stream.WritePacketRTP(media0, &rtp.Packet{
+							err2 := strm.WritePacketRTP(media0, &rtp.Packet{
 								Header: rtp.Header{
 									Version:        0x02,
 									PayloadType:    96,
@@ -126,60 +127,70 @@ func TestSource(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			stream = &gortsplib.ServerStream{
+			strm = &gortsplib.ServerStream{
 				Server: &s,
 				Desc:   &description.Session{Medias: []*description.Media{media0}},
 			}
-			err = stream.Initialize()
+			err = strm.Initialize()
 			require.NoError(t, err)
-			defer stream.Close()
+			defer strm.Close()
 
-			var te *test.SourceTester
+			var ur string
+			var cnf *conf.Path
 
 			if source != "tls" {
+				ur = "rtsp://testuser:testpass@localhost:8555/teststream"
 				var sp conf.RTSPTransport
 				sp.UnmarshalJSON([]byte(`"` + source + `"`)) //nolint:errcheck
-
-				te = test.NewSourceTester(
-					func(p defs.StaticSourceParent) defs.StaticSource {
-						return &Source{
-							ReadTimeout:    conf.Duration(10 * time.Second),
-							WriteTimeout:   conf.Duration(10 * time.Second),
-							WriteQueueSize: 2048,
-							Parent:         p,
-						}
-					},
-					"rtsp://testuser:testpass@localhost:8555/teststream",
-					&conf.Path{
-						RTSPTransport: sp,
-					},
-				)
+				cnf = &conf.Path{
+					RTSPTransport: sp,
+				}
 			} else {
-				te = test.NewSourceTester(
-					func(p defs.StaticSourceParent) defs.StaticSource {
-						return &Source{
-							ReadTimeout:    conf.Duration(10 * time.Second),
-							WriteTimeout:   conf.Duration(10 * time.Second),
-							WriteQueueSize: 2048,
-							Parent:         p,
-						}
-					},
-					"rtsps://testuser:testpass@localhost:8555/teststream",
-					&conf.Path{
-						SourceFingerprint: "33949E05FFFB5FF3E8AA16F8213A6251B4D9363804BA53233C4DA9A46D6F2739",
-					},
-				)
+				ur = "rtsps://testuser:testpass@localhost:8555/teststream"
+				cnf = &conf.Path{
+					SourceFingerprint: "33949E05FFFB5FF3E8AA16F8213A6251B4D9363804BA53233C4DA9A46D6F2739",
+				}
 			}
 
-			defer te.Close()
+			p := &test.StaticSourceParent{}
+			p.Initialize()
+			defer p.Close()
 
-			<-te.Unit
+			so := &Source{
+				ReadTimeout:    conf.Duration(10 * time.Second),
+				WriteTimeout:   conf.Duration(10 * time.Second),
+				WriteQueueSize: 2048,
+				Parent:         p,
+			}
+
+			done := make(chan struct{})
+			defer func() { <-done }()
+
+			ctx, ctxCancel := context.WithCancel(context.Background())
+			defer ctxCancel()
+
+			reloadConf := make(chan *conf.Path)
+
+			go func() {
+				so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+					Context:        ctx,
+					ResolvedSource: ur,
+					Conf:           cnf,
+					ReloadConf:     reloadConf,
+				})
+				close(done)
+			}()
+
+			<-p.Unit
+
+			// the source must be listening on ReloadConf
+			reloadConf <- nil
 		})
 	}
 }
 
 func TestSourceNoPassword(t *testing.T) {
-	var stream *gortsplib.ServerStream
+	var strm *gortsplib.ServerStream
 
 	nonce, err := auth.GenerateNonce()
 	require.NoError(t, err)
@@ -201,12 +212,12 @@ func TestSourceNoPassword(t *testing.T) {
 
 				return &base.Response{
 					StatusCode: base.StatusOK,
-				}, stream, nil
+				}, strm, nil
 			},
 			onSetup: func(_ *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
 				go func() {
 					time.Sleep(100 * time.Millisecond)
-					err2 := stream.WritePacketRTP(media0, &rtp.Packet{
+					err2 := strm.WritePacketRTP(media0, &rtp.Packet{
 						Header: rtp.Header{
 							Version:        0x02,
 							PayloadType:    96,
@@ -222,7 +233,7 @@ func TestSourceNoPassword(t *testing.T) {
 
 				return &base.Response{
 					StatusCode: base.StatusOK,
-				}, stream, nil
+				}, strm, nil
 			},
 			onPlay: func(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 				return &base.Response{
@@ -237,40 +248,52 @@ func TestSourceNoPassword(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	stream = &gortsplib.ServerStream{
+	strm = &gortsplib.ServerStream{
 		Server: &s,
 		Desc:   &description.Session{Medias: []*description.Media{media0}},
 	}
-	err = stream.Initialize()
+	err = strm.Initialize()
 	require.NoError(t, err)
-	defer stream.Close()
+	defer strm.Close()
 
 	var sp conf.RTSPTransport
 	sp.UnmarshalJSON([]byte(`"tcp"`)) //nolint:errcheck
 
-	te := test.NewSourceTester(
-		func(p defs.StaticSourceParent) defs.StaticSource {
-			return &Source{
-				ReadTimeout:    conf.Duration(10 * time.Second),
-				WriteTimeout:   conf.Duration(10 * time.Second),
-				WriteQueueSize: 2048,
-				Parent:         p,
-			}
-		},
-		"rtsp://testuser:@127.0.0.1:8555/teststream",
-		&conf.Path{
-			RTSPTransport: sp,
-		},
-	)
-	defer te.Close()
+	p := &test.StaticSourceParent{}
+	p.Initialize()
+	defer p.Close()
 
-	<-te.Unit
+	so := &Source{
+		ReadTimeout:    conf.Duration(10 * time.Second),
+		WriteTimeout:   conf.Duration(10 * time.Second),
+		WriteQueueSize: 2048,
+		Parent:         p,
+	}
+
+	done := make(chan struct{})
+	defer func() { <-done }()
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	defer ctxCancel()
+
+	go func() {
+		so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+			Context:        ctx,
+			ResolvedSource: "rtsp://testuser:@127.0.0.1:8555/teststream",
+			Conf: &conf.Path{
+				RTSPTransport: sp,
+			},
+		})
+		close(done)
+	}()
+
+	<-p.Unit
 }
 
 func TestSourceRange(t *testing.T) {
 	for _, ca := range []string{"clock", "npt", "smpte"} {
 		t.Run(ca, func(t *testing.T) {
-			var stream *gortsplib.ServerStream
+			var strm *gortsplib.ServerStream
 
 			media0 := test.UniqueMediaH264()
 
@@ -279,12 +302,12 @@ func TestSourceRange(t *testing.T) {
 					onDescribe: func(_ *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 						return &base.Response{
 							StatusCode: base.StatusOK,
-						}, stream, nil
+						}, strm, nil
 					},
 					onSetup: func(_ *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
 						return &base.Response{
 							StatusCode: base.StatusOK,
-						}, stream, nil
+						}, strm, nil
 					},
 					onPlay: func(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 						switch ca {
@@ -300,7 +323,7 @@ func TestSourceRange(t *testing.T) {
 
 						go func() {
 							time.Sleep(100 * time.Millisecond)
-							err := stream.WritePacketRTP(media0, &rtp.Packet{
+							err := strm.WritePacketRTP(media0, &rtp.Packet{
 								Header: rtp.Header{
 									Version:        0x02,
 									PayloadType:    96,
@@ -326,13 +349,13 @@ func TestSourceRange(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			stream = &gortsplib.ServerStream{
+			strm = &gortsplib.ServerStream{
 				Server: &s,
 				Desc:   &description.Session{Medias: []*description.Media{media0}},
 			}
-			err = stream.Initialize()
+			err = strm.Initialize()
 			require.NoError(t, err)
-			defer stream.Close()
+			defer strm.Close()
 
 			cnf := &conf.Path{}
 
@@ -350,21 +373,33 @@ func TestSourceRange(t *testing.T) {
 				cnf.RTSPRangeStart = "130s"
 			}
 
-			te := test.NewSourceTester(
-				func(p defs.StaticSourceParent) defs.StaticSource {
-					return &Source{
-						ReadTimeout:    conf.Duration(10 * time.Second),
-						WriteTimeout:   conf.Duration(10 * time.Second),
-						WriteQueueSize: 2048,
-						Parent:         p,
-					}
-				},
-				"rtsp://127.0.0.1:8555/teststream",
-				cnf,
-			)
-			defer te.Close()
+			p := &test.StaticSourceParent{}
+			p.Initialize()
+			defer p.Close()
 
-			<-te.Unit
+			so := &Source{
+				ReadTimeout:    conf.Duration(10 * time.Second),
+				WriteTimeout:   conf.Duration(10 * time.Second),
+				WriteQueueSize: 2048,
+				Parent:         p,
+			}
+
+			done := make(chan struct{})
+			defer func() { <-done }()
+
+			ctx, ctxCancel := context.WithCancel(context.Background())
+			defer ctxCancel()
+
+			go func() {
+				so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+					Context:        ctx,
+					ResolvedSource: "rtsp://127.0.0.1:8555/teststream",
+					Conf:           cnf,
+				})
+				close(done)
+			}()
+
+			<-p.Unit
 		})
 	}
 }

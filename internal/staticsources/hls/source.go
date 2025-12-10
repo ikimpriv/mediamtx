@@ -3,10 +3,11 @@ package hls
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/bluenviron/gohlslib/v2"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/counterdumper"
@@ -17,14 +18,20 @@ import (
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
+type parent interface {
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
+}
+
 // Source is a HLS static source.
 type Source struct {
 	ReadTimeout conf.Duration
-	Parent      defs.StaticSourceParent
+	Parent      parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[HLS source] "+format, args...)
 }
 
@@ -54,8 +61,13 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 	decodeErrors.Start()
 	defer decodeErrors.Stop()
 
+	u, err := url.Parse(params.ResolvedSource)
+	if err != nil {
+		return err
+	}
+
 	tr := &http.Transport{
-		TLSClientConfig: tls.ConfigForFingerprint(params.Conf.SourceFingerprint),
+		TLSClientConfig: tls.MakeConfig(u.Hostname(), params.Conf.SourceFingerprint),
 	}
 	defer tr.CloseIdleConnections()
 
@@ -82,9 +94,9 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 			decodeErrors.Increase()
 		},
 		OnTracks: func(tracks []*gohlslib.Track) error {
-			medias, err := hls.ToStream(c, tracks, &stream)
-			if err != nil {
-				return err
+			medias, err2 := hls.ToStream(c, tracks, params.Conf, &stream)
+			if err2 != nil {
+				return err2
 			}
 
 			res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
@@ -101,14 +113,19 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		},
 	}
 
-	err := c.Start()
+	err = c.Start()
 	if err != nil {
 		return err
 	}
 
+	waitErr := make(chan error)
+	go func() {
+		waitErr <- c.Wait2()
+	}()
+
 	for {
 		select {
-		case err := <-c.Wait():
+		case err = <-waitErr:
 			c.Close()
 			return err
 
@@ -116,7 +133,7 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 
 		case <-params.Context.Done():
 			c.Close()
-			<-c.Wait()
+			<-waitErr
 			return nil
 		}
 	}

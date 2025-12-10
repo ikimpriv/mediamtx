@@ -1,29 +1,26 @@
 package rtmp
 
 import (
+	"context"
 	"crypto/tls"
-	"net"
 	"net/url"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortmplib"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
-	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/test"
 	"github.com/bluenviron/mediamtx/internal/unit"
 	"github.com/stretchr/testify/require"
 )
 
-type dummyPath struct {
-	stream        *stream.Stream
-	streamCreated chan struct{}
-}
+type dummyPath struct{}
 
 func (p *dummyPath) Name() string {
 	return "teststream"
@@ -35,26 +32,6 @@ func (p *dummyPath) SafeConf() *conf.Path {
 
 func (p *dummyPath) ExternalCmdEnv() externalcmd.Environment {
 	return externalcmd.Environment{}
-}
-
-func (p *dummyPath) StartPublisher(req defs.PathStartPublisherReq) (*stream.Stream, error) {
-	p.stream = &stream.Stream{
-		WriteQueueSize:     512,
-		UDPMaxPayloadSize:  1472,
-		Desc:               req.Desc,
-		GenerateRTPPackets: true,
-		Parent:             test.NilLogger,
-	}
-	err := p.stream.Initialize()
-	if err != nil {
-		return nil, err
-	}
-
-	close(p.streamCreated)
-	return p.stream, nil
-}
-
-func (p *dummyPath) StopPublisher(_ defs.PathStopPublisherReq) {
 }
 
 func (p *dummyPath) RemovePublisher(_ defs.PathRemovePublisherReq) {
@@ -83,22 +60,34 @@ func TestServerPublish(t *testing.T) {
 				defer os.Remove(serverKeyFpath)
 			}
 
-			path := &dummyPath{
-				streamCreated: make(chan struct{}),
-			}
+			var strm *stream.Stream
+			streamCreated := make(chan struct{})
 
 			pathManager := &test.PathManager{
-				AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, error) {
+				AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, *stream.Stream, error) {
 					require.Equal(t, "teststream", req.AccessRequest.Name)
 					require.Equal(t, "user=myuser&pass=mypass&param=value", req.AccessRequest.Query)
-					require.Equal(t, "myuser", req.AccessRequest.User)
-					require.Equal(t, "mypass", req.AccessRequest.Pass)
-					return path, nil
+					require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
+					require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
+
+					strm = &stream.Stream{
+						WriteQueueSize:     512,
+						RTPMaxPayloadSize:  1450,
+						Desc:               req.Desc,
+						GenerateRTPPackets: true,
+						Parent:             test.NilLogger,
+					}
+					err := strm.Initialize()
+					require.NoError(t, err)
+
+					close(streamCreated)
+
+					return &dummyPath{}, strm, nil
 				},
 			}
 
 			s := &Server{
-				Address:             "127.0.0.1:1935",
+				Address:             "127.0.0.1:1939",
 				ReadTimeout:         conf.Duration(10 * time.Second),
 				WriteTimeout:        conf.Duration(10 * time.Second),
 				IsTLS:               encrypt == "tls",
@@ -116,65 +105,66 @@ func TestServerPublish(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			u, err := url.Parse("rtmp://127.0.0.1:1935/teststream?user=myuser&pass=mypass&param=value")
-			require.NoError(t, err)
+			var rawURL string
 
-			nconn, err := func() (net.Conn, error) {
-				if encrypt == "plain" {
-					return net.Dial("tcp", u.Host)
-				}
-				return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: true})
-			}()
-			require.NoError(t, err)
-			defer nconn.Close()
-
-			conn := &rtmp.Conn{
-				RW:      nconn,
-				Client:  true,
-				URL:     u,
-				Publish: true,
+			if encrypt == "tls" {
+				rawURL += "rtmps://"
+			} else {
+				rawURL += "rtmp://"
 			}
-			err = conn.Initialize()
+
+			rawURL += "127.0.0.1:1939/teststream?user=myuser&pass=mypass&param=value"
+
+			u, err := url.Parse(rawURL)
 			require.NoError(t, err)
 
-			w := &rtmp.Writer{
-				Conn:       conn,
-				VideoTrack: test.FormatH264,
-				AudioTrack: test.FormatMPEG4Audio,
+			conn := &gortmplib.Client{
+				URL:       u,
+				TLSConfig: &tls.Config{InsecureSkipVerify: true},
+				Publish:   true,
+			}
+			err = conn.Initialize(context.Background())
+			require.NoError(t, err)
+			defer conn.Close()
+
+			w := &gortmplib.Writer{
+				Conn:   conn,
+				Tracks: []format.Format{test.FormatH264, test.FormatMPEG4Audio},
 			}
 			err = w.Initialize()
 			require.NoError(t, err)
 
 			err = w.WriteH264(
+				test.FormatH264,
 				2*time.Second, 2*time.Second, [][]byte{
 					{5, 2, 3, 4},
 				})
 			require.NoError(t, err)
 
-			<-path.streamCreated
+			<-streamCreated
 
 			recv := make(chan struct{})
 
-			reader := test.NilLogger
+			r := &stream.Reader{Parent: test.NilLogger}
 
-			path.stream.AddReader(
-				reader,
-				path.stream.Desc.Medias[0],
-				path.stream.Desc.Medias[0].Formats[0],
-				func(u unit.Unit) error {
-					require.Equal(t, [][]byte{
+			r.OnData(
+				strm.Desc.Medias[0],
+				strm.Desc.Medias[0].Formats[0],
+				func(u *unit.Unit) error {
+					require.Equal(t, unit.PayloadH264{
 						test.FormatH264.SPS,
 						test.FormatH264.PPS,
 						{5, 2, 3, 4},
-					}, u.(*unit.H264).AU)
+					}, u.Payload)
 					close(recv)
 					return nil
 				})
 
-			path.stream.StartReader(reader)
-			defer path.stream.RemoveReader(reader)
+			strm.AddReader(r)
+			defer strm.RemoveReader(r)
 
 			err = w.WriteH264(
+				test.FormatH264,
 				3*time.Second, 3*time.Second, [][]byte{
 					{5, 2, 3, 4},
 				})
@@ -208,7 +198,7 @@ func TestServerRead(t *testing.T) {
 
 			strm := &stream.Stream{
 				WriteQueueSize:     512,
-				UDPMaxPayloadSize:  1472,
+				RTPMaxPayloadSize:  1450,
 				Desc:               desc,
 				GenerateRTPPackets: true,
 				Parent:             test.NilLogger,
@@ -216,20 +206,18 @@ func TestServerRead(t *testing.T) {
 			err := strm.Initialize()
 			require.NoError(t, err)
 
-			path := &dummyPath{stream: strm}
-
 			pathManager := &test.PathManager{
 				AddReaderImpl: func(req defs.PathAddReaderReq) (defs.Path, *stream.Stream, error) {
 					require.Equal(t, "teststream", req.AccessRequest.Name)
 					require.Equal(t, "user=myuser&pass=mypass&param=value", req.AccessRequest.Query)
-					require.Equal(t, "myuser", req.AccessRequest.User)
-					require.Equal(t, "mypass", req.AccessRequest.Pass)
-					return path, path.stream, nil
+					require.Equal(t, "myuser", req.AccessRequest.Credentials.User)
+					require.Equal(t, "mypass", req.AccessRequest.Credentials.Pass)
+					return &dummyPath{}, strm, nil
 				},
 			}
 
 			s := &Server{
-				Address:             "127.0.0.1:1935",
+				Address:             "127.0.0.1:1939",
 				ReadTimeout:         conf.Duration(10 * time.Second),
 				WriteTimeout:        conf.Duration(10 * time.Second),
 				IsTLS:               encrypt == "tls",
@@ -247,61 +235,56 @@ func TestServerRead(t *testing.T) {
 			require.NoError(t, err)
 			defer s.Close()
 
-			u, err := url.Parse("rtmp://127.0.0.1:1935/teststream?user=myuser&pass=mypass&param=value")
+			var rawURL string
+
+			if encrypt == "tls" {
+				rawURL += "rtmps://"
+			} else {
+				rawURL += "rtmp://"
+			}
+
+			rawURL += "127.0.0.1:1939/teststream?user=myuser&pass=mypass&param=value"
+
+			u, err := url.Parse(rawURL)
 			require.NoError(t, err)
 
-			nconn, err := func() (net.Conn, error) {
-				if encrypt == "plain" {
-					return net.Dial("tcp", u.Host)
-				}
-				return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: true})
-			}()
+			conn := &gortmplib.Client{
+				URL:       u,
+				TLSConfig: &tls.Config{InsecureSkipVerify: true},
+				Publish:   false,
+			}
+			err = conn.Initialize(context.Background())
 			require.NoError(t, err)
-			defer nconn.Close()
+			defer conn.Close()
 
 			go func() {
-				strm.WaitRunningReader()
+				time.Sleep(500 * time.Millisecond)
 
-				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-					Base: unit.Base{
-						NTP: time.Time{},
-					},
-					AU: [][]byte{
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					NTP: time.Time{},
+					Payload: unit.PayloadH264{
 						{5, 2, 3, 4}, // IDR
 					},
 				})
 
-				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-					Base: unit.Base{
-						NTP: time.Time{},
-						PTS: 2 * 90000,
-					},
-					AU: [][]byte{
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					NTP: time.Time{},
+					PTS: 2 * 90000,
+					Payload: unit.PayloadH264{
 						{5, 2, 3, 4}, // IDR
 					},
 				})
 
-				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.H264{
-					Base: unit.Base{
-						NTP: time.Time{},
-						PTS: 3 * 90000,
-					},
-					AU: [][]byte{
+				strm.WriteUnit(desc.Medias[0], desc.Medias[0].Formats[0], &unit.Unit{
+					NTP: time.Time{},
+					PTS: 3 * 90000,
+					Payload: unit.PayloadH264{
 						{5, 2, 3, 4}, // IDR
 					},
 				})
 			}()
 
-			conn := &rtmp.Conn{
-				RW:      nconn,
-				Client:  true,
-				URL:     u,
-				Publish: false,
-			}
-			err = conn.Initialize()
-			require.NoError(t, err)
-
-			r := &rtmp.Reader{
+			r := &gortmplib.Reader{
 				Conn: conn,
 			}
 			err = r.Initialize()
@@ -310,7 +293,7 @@ func TestServerRead(t *testing.T) {
 			tracks := r.Tracks()
 			require.Equal(t, []format.Format{test.FormatH264}, tracks)
 
-			r.OnDataH264(tracks[0].(*format.H264), func(_ time.Duration, au [][]byte) {
+			r.OnDataH264(tracks[0].(*format.H264), func(_ time.Duration, _ time.Duration, au [][]byte) {
 				require.Equal(t, [][]byte{
 					test.FormatH264.SPS,
 					test.FormatH264.PPS,
